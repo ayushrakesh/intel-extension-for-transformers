@@ -31,6 +31,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "common.h"
+#include "core/layers/jblas_common.hpp"
 #include "models/model_utils/model_types.h"
 #include "models/model_utils/model_config.h"
 #include "models/model_utils/model_utils.h"
@@ -64,7 +65,8 @@ class Model {
   static int quant_model(const std::string& model_path, const std::string& out_path, const std::string& weight_dtype,
                          const std::string& alg, int group_size, const std::string& scale_dtype,
                          const std::string& compute_dtype, bool use_ggml);
-
+  static size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
+                   void* dstpr, const quant_params_internal params, int nthread, int n, int k);
  private:
   model_context* ctx = nullptr;
   gpt_params params;
@@ -358,6 +360,24 @@ int Model::quant_model(const std::string& model_path, const std::string& out_pat
     fprintf(stderr, "%s: failed to quantize model from '%s'\n", __func__, q_params.model_file.c_str());
     return 1;
   }
+  return 0;
+}
+
+size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
+                   void* dstpr, const quant_params_internal params, int nthread, int n, int k) {
+  using CompType = jblas::prologue::weight_comp::gemm_kblcok::PrologueBIDs;
+  using namespace ne_jblas;
+  auto cd = jblas::utils::parallel::CpuDevice::getInstance();
+  auto dstbptr = (int8_t*)dstpr;
+  cd->setThreads(nthread);
+
+  using Kernel = WeiS4ClipFp32<GcCompInt8KBlock, JblasAVX512F>;
+  static Kernel kernel;
+  auto packedw = kernel.createStorage(n, k, params.group_size);
+  packedw.assign(dstbptr);
+  // packQWeight(N, K, tmpq.data(), ldb, Tscales.data(), Tzps.data(), stor);
+  kernel.packQWeight(n, k, src_w, k, src_scales, src_zps, &packedw);
+
   return 0;
 }
 
