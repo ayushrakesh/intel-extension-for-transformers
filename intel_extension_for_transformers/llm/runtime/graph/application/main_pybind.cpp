@@ -68,18 +68,18 @@ class Model {
   static int quant_model(const std::string& model_path, const std::string& out_path, const std::string& weight_dtype,
                          const std::string& alg, int group_size, const std::string& scale_dtype,
                          const std::string& compute_dtype, bool use_ggml);
-  static size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
+  size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
   void numpy_to_float_ptr(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
     // 获取NumPy数组的指针
     int8_t* w_ptr = src_w.mutable_data();
     float* scales_ptr = src_scales.mutable_data();
     int8_t* dst_ptr = dst.mutable_data();
-    // std::cout << ptr << std::endl;
-    for(int i = 0; i < 3; i++) {
-      dst_ptr[i] = int(w_ptr[i * 2] * scales_ptr[i * 2]);
-      dst_ptr[i] += int(w_ptr[i * 2 + 1] * scales_ptr[i * 2 + 1]);
-    }
+
+    quant_params_internal q_params;
+    q_params.scale_dtype = quant_sdtype::fp32;
+    q_params.compute_dtype = quant_comp::int8;
+    jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 12288, 4096);
     return;
   }
  private:
@@ -378,7 +378,7 @@ int Model::quant_model(const std::string& model_path, const std::string& out_pat
   return 0;
 }
 
-size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
+size_t Model::jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k) {
   using CompType = jblas::prologue::weight_comp::gemm_kblcok::PrologueBIDs;
   using namespace ne_jblas;
@@ -391,7 +391,18 @@ size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* s
   auto packedw = kernel.createStorage(n, k, params.group_size);
   packedw.assign(dstbptr);
   // packQWeight(N, K, tmpq.data(), ldb, Tscales.data(), Tzps.data(), stor);
-  kernel.packQWeight(n, k, src_w, k, src_scales, src_zps, &packedw);
+  // TODO: aligned weight and scales.
+  jblas::utils::aligned_vector<int8_t> tmpq(n * k);
+  // copy src_w to tmpq
+
+  int nk_scale = jblas::utils::updiv(k, packedw.mBlockSize);
+  auto ssize = (size_t)n * nk_scale;
+  jblas::utils::avector<float> Tscales(ssize);
+  // copy src scales to Tscales
+
+
+  jblas::utils::avector<int8_t> Tzps(packedw.mIsAsym ? ssize : 0);
+  kernel.packQWeight(n, k, tmpq.data(), k, Tscales.data(), Tzps.data(), &packedw);
 
   return 0;
 }
