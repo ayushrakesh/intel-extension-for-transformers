@@ -30,6 +30,7 @@
 #include <utility>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/numpy.h>
 #include "common.h"
 #include "core/layers/jblas_common.hpp"
 #include "models/model_utils/model_types.h"
@@ -45,6 +46,8 @@
 #include <windows.h>
 #include <signal.h>
 #endif
+
+namespace py = pybind11;
 
 std::shared_ptr<quant_layer_base> get_model_quant_layer(const std::string model_name) {
   return ql_registry::create_ql(model_name);
@@ -67,6 +70,16 @@ class Model {
                          const std::string& compute_dtype, bool use_ggml);
   static size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
+  void numpy_to_float_ptr(py::array_t<float> src_w, py::array_t<float> src_scales, py::array_t<float> dst) {
+    // 获取NumPy数组的指针
+    float* w_ptr = src_w.mutable_data();
+    float* scales_ptr = src_scales.mutable_data();
+    float* dst_ptr = dst.mutable_data();
+    // std::cout << ptr << std::endl;
+    for(int i = 0; i < 4; i++)
+      dst_ptr[i] = w_ptr[i] * scales_ptr[i];
+    return;
+  }
  private:
   model_context* ctx = nullptr;
   gpt_params params;
@@ -381,8 +394,6 @@ size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* s
   return 0;
 }
 
-namespace py = pybind11;
-
 #if MODEL_NAME_ID == 1
 
 PYBIND11_MODULE(gptj_cpp, m)
@@ -445,5 +456,6 @@ PYBIND11_MODULE(baichuan_cpp, m)
                   py::arg("weight_dtype") = "int4", py::arg("alg") = "sym", py::arg("group_size") = 32,
                   py::arg("scale_dtype") = "fp32", py::arg("compute_dtype") = "ggml", py::arg("use_ggml") = false)
       .def("is_token_end", &Model::is_token_end)
+      .def("numpy_to_float_ptr", &Model::numpy_to_float_ptr)
       .def("reinit", &Model::reinit);
 }
