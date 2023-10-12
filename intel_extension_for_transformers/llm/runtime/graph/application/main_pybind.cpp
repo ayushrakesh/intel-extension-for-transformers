@@ -70,14 +70,14 @@ class Model {
                          const std::string& compute_dtype, bool use_ggml);
   static size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
-  void numpy_to_float_ptr(py::array_t<float> src_w, py::array_t<float> src_scales, py::array_t<float> dst) {
+  void numpy_to_float_ptr(py::array_t<float> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
     // 获取NumPy数组的指针
     float* w_ptr = src_w.mutable_data();
     float* scales_ptr = src_scales.mutable_data();
-    float* dst_ptr = dst.mutable_data();
+    int8_t* dst_ptr = dst.mutable_data();
     // std::cout << ptr << std::endl;
     for(int i = 0; i < 4; i++)
-      dst_ptr[i] = w_ptr[i] * scales_ptr[i];
+      dst_ptr[i] = int(w_ptr[i] * scales_ptr[i]);
     return;
   }
  private:
