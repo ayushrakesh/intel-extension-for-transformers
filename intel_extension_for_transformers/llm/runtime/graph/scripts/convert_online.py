@@ -142,11 +142,18 @@ def dump_tensor(f, name: str, tensor: torch.Tensor, ggml_type: GGMLType):
     assert tensor.dtype == torch.float32
 
     # tensor name
-    f.write(struct.pack("i", len(name.encode())))
-    f.write(name.encode())
+    # f.write(struct.pack("i", len(name.encode())))
+    # f.write(name.encode())
 
-    # tensor shape & dtype
-    f.write(struct.pack("i" * (2 + tensor.ndim), tensor.ndim, *tensor.shape, ggml_type.value))
+    # # tensor shape & dtype
+    # f.write(struct.pack("i" * (2 + tensor.ndim), tensor.ndim, *tensor.shape, ggml_type.value))
+    data = tensor.squeeze()
+    n_dims = len(data.shape)
+    str = name.encode("utf-8")
+    f.write(struct.pack("iii", n_dims, len(str), ggml_type.value))
+    for i in range(n_dims):
+        f.write(struct.pack("i", data.shape[n_dims - 1 - i]))
+    f.write(str)
 
     # tensor data
     if ggml_type != GGMLType.Q4_J:
@@ -168,8 +175,8 @@ def dump_tensor(f, name: str, tensor: torch.Tensor, ggml_type: GGMLType):
             raise NotImplementedError(f"Cannot dump tensor of dtype {tensor.dtype}")
 
         # align address
-        aligned_pos = (f.tell() + (GGML_MEM_ALIGN - 1)) // GGML_MEM_ALIGN * GGML_MEM_ALIGN
-        f.seek(aligned_pos)
+        # aligned_pos = (f.tell() + (GGML_MEM_ALIGN - 1)) // GGML_MEM_ALIGN * GGML_MEM_ALIGN
+        # f.seek(aligned_pos)
         tensor.numpy().tofile(f)
     else:
         quantize_q4_j(tensor, f)
@@ -213,12 +220,86 @@ def dump_state_dict(f, weight_names, state_dict, quantization_bit, ggml_type):
 class BaseConverter:
     @classmethod
     def convert(cls, f, model, tokenizer, ggml_type):
-        f.write(b"ggml")  # magic
-        f.write(struct.pack("ii", cls.MODEL_TYPE.value, 1))  # model type & version
+        # f.write(b"ggml")  # magic
+        # f.write(struct.pack("ii", cls.MODEL_TYPE.value, 1))  # model type & version
+        f.write(struct.pack("i", 0x67676d66))
+        f.write(struct.pack("i", 1))
         cls.dump_config(f, model.config, ggml_type)
         cls.dump_tokenizer(f, tokenizer)
         cls.dump_model(f, model, ggml_type)
+import sentencepiece.sentencepiece_model_pb2 as model
+from sentencepiece import SentencePieceProcessor  # type: ignore
+from typing import (IO, TYPE_CHECKING, Any, Callable, Dict, Iterable, List,
+                    Literal, Optional, Sequence, Tuple, TypeVar, Union)
+class SentencePieceVocab:
+    def __init__(self, fname_tokenizer: Path, fname_added_tokens: Optional[Path]) -> None:
+        self.sentencepiece_tokenizer = SentencePieceProcessor(str(fname_tokenizer))
+        added_tokens: Dict[str, int]
+        if fname_added_tokens is not None:
+            added_tokens = json.load(open(fname_added_tokens))
+        else:
+            added_tokens = {}
+        vocab_size: int = self.sentencepiece_tokenizer.vocab_size()
+        expected_ids = list(range(vocab_size, vocab_size + len(added_tokens)))
+        actual_ids = sorted(added_tokens.values())
+        if expected_ids != actual_ids:
+            raise Exception(f"Expected added token IDs to be sequential and start at {len(added_tokens)}; got {actual_ids}")
+        items = sorted(added_tokens.items(), key=lambda text_idx: text_idx[1])
+        self.added_tokens_list = [text for (text, idx) in items]
+        self.vocab_size_base: int = vocab_size
+        self.vocab_size: int = self.vocab_size_base + len(self.added_tokens_list)
+        self.fname_tokenizer = fname_tokenizer
+        self.fname_added_tokens = fname_added_tokens
 
+    def sentencepiece_tokens(self) -> Iterable[Tuple[bytes, float]]:
+        tokenizer = self.sentencepiece_tokenizer
+        for i in range(tokenizer.vocab_size()):
+            text: bytes
+            if tokenizer.is_unknown(i):
+                text = " \u2047 ".encode("utf-8")
+            elif tokenizer.is_control(i):
+                text = b""
+            elif tokenizer.is_byte(i):
+                piece = tokenizer.id_to_piece(i)
+                if len(piece) != 6:
+                    raise Exception(f"Invalid token: {piece}")
+                byte_value = int(piece[3:-1], 16)
+                text = struct.pack("B", byte_value)
+            else:
+                text = tokenizer.id_to_piece(i).replace("\u2581", " ").encode("utf-8")
+            score: float = tokenizer.get_score(i)
+            yield text, score
+
+    def added_tokens(self) -> Iterable[Tuple[bytes, float]]:
+        for text in self.added_tokens_list:
+            score = -1000.0
+            yield text.encode("utf-8"), score
+
+    def all_tokens(self) -> Iterable[Tuple[bytes, float]]:
+        yield from self.sentencepiece_tokens()
+        yield from self.added_tokens()
+
+    def __repr__(self) -> str:
+        return f"<SentencePieceVocab with {self.vocab_size_base} base tokens and {len(self.added_tokens_list)} added tokens>"
+
+
+def load_vocab(path: Path) -> SentencePieceVocab:
+    # Be extra-friendly and accept either a file or a directory.  Also, if it's
+    # a directory, it might be the model directory, and tokenizer.model might
+    # be in the parent of that.
+    if path.is_dir():
+        path2 = path / "tokenizer.model"
+        # Use `.parent` instead of /.. to handle the symlink case better.
+        path3 = path.parent / "tokenizer.model"
+        if path2.exists():
+            path = path2
+        elif path3.exists():
+            path = path3
+        else:
+            raise FileNotFoundError(f"Could not find tokenizer.model in {path} or its parent; if it's in another directory, pass the directory as --vocab-dir")
+    added_tokens_path = path.parent / "added_tokens.json"
+    print(f"Loading vocab file {path}")
+    return SentencePieceVocab(path, added_tokens_path if added_tokens_path.exists() else None)
 
 class ChatGLM2Converter(BaseConverter):
     MODEL_TYPE = ModelType.CHATGLM2
@@ -253,13 +334,62 @@ class ChatGLM2Converter(BaseConverter):
             config.multi_query_group_num,
         ]
 
-        f.write(struct.pack("i" * len(config_values), *config_values))
+        # f.write(struct.pack("i" * len(config_values), *config_values))
+        hparams = config.to_dict()
+        f.write(struct.pack("i", hparams["padded_vocab_size"]))
+        f.write(struct.pack("i", hparams["hidden_size"]))
+        f.write(struct.pack("i", 0))
+        f.write(struct.pack("i", hparams["num_attention_heads"]))
+        f.write(struct.pack("i", 0))
+        f.write(struct.pack("i", hparams["num_layers"]))
+        f.write(struct.pack("i", 0))
+        f.write(struct.pack("i", 0))
+        f.write(struct.pack("i", hparams["seq_length"]))
+        f.write(struct.pack("f", 0))
+        f.write(struct.pack("f", 0))
+        f.write(struct.pack("i", 0))
+
+        f.write(struct.pack("i", 0))  # word_embed_proj_dim (for opt)
+        f.write(struct.pack("i", 0))  # do_layer_norm_before (for opt)
+
+        f.write(struct.pack("i", hparams["multi_query_group_num"]))
+        f.write(struct.pack("i", hparams["ffn_hidden_size"]))
+        f.write(struct.pack("i", 0))
 
     @staticmethod
     def dump_tokenizer(f, tokenizer):
-        serialized_model_proto = tokenizer.tokenizer.sp_model.serialized_model_proto()
-        f.write(struct.pack("i", len(serialized_model_proto)))
-        f.write(serialized_model_proto)
+        f.write(struct.pack("i", tokenizer.bos_token_id if tokenizer.bos_token_id else 1))
+        f.write(struct.pack("i", tokenizer.eos_token_id if tokenizer.eos_token_id else 2))
+        f.write(struct.pack("i", tokenizer.pad_token_id if tokenizer.pad_token_id else -1))
+        f.write(struct.pack("i", tokenizer.sep_token_id if tokenizer.sep_token_id else -1))
+
+
+        vocab = load_vocab(Path("/mnt/disk1/data2/zhenweil/models/chatglm2-6b"))
+        counter = 0
+        for text, score in vocab.all_tokens():
+            f.write(struct.pack("i", len(text)))
+            f.write(text)
+            f.write(struct.pack("f", score))
+            counter += 1
+
+        while counter < 65024:
+            f.write(struct.pack("i", len(text)))
+            f.write(text)
+            f.write(struct.pack("f", 0))
+            counter += 1
+        # counter = 0
+        # import pdb; pdb.set_trace()
+        # for text, score in tokenizer.all_tokens():
+        #     f.write(struct.pack("i", len(text)))
+        #     f.write(text)
+        #     f.write(struct.pack("f", score))
+        #     counter += 1
+
+        # while counter < hparams["padded_vocab_size"]:
+        #     f.write(struct.pack("i", len(text)))
+        #     f.write(text)
+        #     f.write(struct.pack("f", 0))
+        #     counter += 1
 
     @staticmethod
     def dump_model(f, model, ggml_type):
