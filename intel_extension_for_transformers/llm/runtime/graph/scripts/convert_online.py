@@ -36,6 +36,7 @@ class GGMLType(Enum):
     Q5_0 = 6
     Q5_1 = 7
     Q8_0 = 8
+    Q4_J = 10
 
 
 class ModelType(Enum):
@@ -69,6 +70,19 @@ def quantize_q4_0(tensor: torch.Tensor) -> torch.CharTensor:
     # add scale into each block
     tensor = torch.cat((scale.half().view(torch.int8), tensor), dim=-1)
     return tensor
+
+def quantize_q4_j(tensor: torch.Tensor, f):
+    import intel_extension_for_transformers.llm.runtime.graph.chatglm2_cpp as cpp_model
+    import numpy as np
+    dst = np.zeros((tensor.shape[0], tensor.shape[1]*2), dtype=np.int8)
+    byte_size = cpp_model.Model.np_jblas_quantize(tensor.numpy(), dst)
+    print("tensor shape: ", tensor.shape)
+    print("byte_size: ", byte_size)
+    import struct
+    dst = dst.flatten()
+    for i in range(byte_size):
+        f.write(struct.pack('b', dst[i]))
+
 
 
 def quantize_q4_1(tensor: torch.Tensor) -> torch.CharTensor:
@@ -135,27 +149,30 @@ def dump_tensor(f, name: str, tensor: torch.Tensor, ggml_type: GGMLType):
     f.write(struct.pack("i" * (2 + tensor.ndim), tensor.ndim, *tensor.shape, ggml_type.value))
 
     # tensor data
-    if ggml_type == GGMLType.F32:
-        tensor = tensor.float()
-    elif ggml_type == GGMLType.F16:
-        tensor = tensor.half()
-    elif ggml_type == GGMLType.Q8_0:
-        tensor = quantize_q8_0(tensor)
-    elif ggml_type == GGMLType.Q4_0:
-        tensor = quantize_q4_0(tensor)
-    elif ggml_type == GGMLType.Q4_1:
-        tensor = quantize_q4_1(tensor)
-    elif ggml_type == GGMLType.Q5_0:
-        tensor = quantize_q5_0(tensor)
-    elif ggml_type == GGMLType.Q5_1:
-        tensor = quantize_q5_1(tensor)
-    else:
-        raise NotImplementedError(f"Cannot dump tensor of dtype {tensor.dtype}")
+    if ggml_type != GGMLType.Q4_J:
+        if ggml_type == GGMLType.F32:
+            tensor = tensor.float()
+        elif ggml_type == GGMLType.F16:
+            tensor = tensor.half()
+        elif ggml_type == GGMLType.Q8_0:
+            tensor = quantize_q8_0(tensor)
+        elif ggml_type == GGMLType.Q4_0:
+            tensor = quantize_q4_0(tensor)
+        elif ggml_type == GGMLType.Q4_1:
+            tensor = quantize_q4_1(tensor)
+        elif ggml_type == GGMLType.Q5_0:
+            tensor = quantize_q5_0(tensor)
+        elif ggml_type == GGMLType.Q5_1:
+            tensor = quantize_q5_1(tensor)
+        else:
+            raise NotImplementedError(f"Cannot dump tensor of dtype {tensor.dtype}")
 
-    # align address
-    aligned_pos = (f.tell() + (GGML_MEM_ALIGN - 1)) // GGML_MEM_ALIGN * GGML_MEM_ALIGN
-    f.seek(aligned_pos)
-    tensor.numpy().tofile(f)
+        # align address
+        aligned_pos = (f.tell() + (GGML_MEM_ALIGN - 1)) // GGML_MEM_ALIGN * GGML_MEM_ALIGN
+        f.seek(aligned_pos)
+        tensor.numpy().tofile(f)
+    else:
+        quantize_q4_j(tensor, f)
 
 
 def dump_state_dict(f, weight_names, state_dict, quantization_bit, ggml_type):
@@ -323,7 +340,7 @@ def main():
         "--type",
         default="q4_0",
         type=str,
-        choices=["f32", "f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1"],
+        choices=["f32", "f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "q4_j"],
         help="GGML model quantization type",
     )
     args = parser.parse_args()

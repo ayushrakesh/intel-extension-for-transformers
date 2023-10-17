@@ -72,7 +72,7 @@ class Model {
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
   static size_t jblas_quantize(const float* src_w, 
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
-  static void np_jblas_qpack(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
+  static size_t np_jblas_qpack(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
     // 获取NumPy数组的指针
     int8_t* w_ptr = src_w.mutable_data();
     float* scales_ptr = src_scales.mutable_data();
@@ -83,16 +83,16 @@ class Model {
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
     q_params.group_size = 128;
-    Model::jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
+    return Model::jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
   }
 
-  static void np_jblas_quantize(py::array_t<float> src_w, py::array_t<float> dst) {
+  static size_t np_jblas_quantize(py::array_t<float> src_w, py::array_t<float> dst) {
     quant_params_internal q_params;
     q_params.bits = quant_bits::q8;
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
     q_params.group_size = 128;
-    Model::jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
+    return Model::jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
   }
  private:
   model_context* ctx = nullptr;
@@ -426,19 +426,19 @@ size_t Model::jblas_quantize(const float* src_w,
   using CompType = jblas::prologue::weight_comp::gemm_kblcok::PrologueBIDs;
   using namespace ne_jblas;
   auto cd = jblas::utils::parallel::CpuDevice::getInstance();
-  auto dstbptr = (float*)dstpr;
+  auto dstbptr = (int8_t*)dstpr;
   cd->setThreads(nthread);
   using Kernel = WeiS8Fp32<GcCompInt8KBlock, JblasAVX512F>;
   // using Kernel = WeiS4ClipFp32<GcCompInt8KBlock, JblasAVX512F>;
   static Kernel kernel;
   auto packedw = kernel.createStorage(n, k, params.group_size);
 
-  jblas::utils::aligned_vector<int8_t> buffer(packedw.mSize);
-  packedw.assign(buffer.data());
+  // jblas::utils::aligned_vector<int8_t> buffer(packedw.mSize);
+  packedw.assign(dstbptr);
 
   kernel.packTransposeWeight(n, k, src_w, k, &packedw);
-  kernel.unpackTransposeWeight(n, k, &packedw, dstbptr, n);
-  return 0;
+  // kernel.unpackTransposeWeight(n, k, &packedw, dstbptr, n);
+  return packedw.mSize;
 }
 
 
