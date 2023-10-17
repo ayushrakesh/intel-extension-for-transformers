@@ -79,7 +79,7 @@ class Model {
     quant_params_internal q_params;
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
-    jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 12288, 4096);
+    jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
     return;
   }
  private:
