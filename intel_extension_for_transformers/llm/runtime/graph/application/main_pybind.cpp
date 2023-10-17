@@ -70,6 +70,8 @@ class Model {
                          const std::string& compute_dtype, bool use_ggml);
   size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
+  size_t jblas_quantize(const float* src_w, 
+                   void* dstpr, const quant_params_internal params, int nthread, int n, int k);
   void numpy_to_float_ptr(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
     // 获取NumPy数组的指针
     int8_t* w_ptr = src_w.mutable_data();
@@ -77,11 +79,21 @@ class Model {
     int8_t* dst_ptr = dst.mutable_data();
 
     quant_params_internal q_params;
+    q_params.bits = quant_bits::q8;
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
     q_params.group_size = 128;
     jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
     return;
+  }
+
+  void q_jblas_tensor(py::array_t<float> src_w, py::array_t<float> dst) {
+    quant_params_internal q_params;
+    q_params.bits = quant_bits::q8;
+    q_params.scale_dtype = quant_sdtype::fp32;
+    q_params.compute_dtype = quant_comp::int8;
+    q_params.group_size = 128;
+    jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
   }
  private:
   model_context* ctx = nullptr;
@@ -410,6 +422,27 @@ size_t Model::jblas_qpack(const int8_t* src_w, const float* src_scales, const in
   return 0;
 }
 
+size_t Model::jblas_quantize(const float* src_w, 
+                   void* dstpr, const quant_params_internal params, int nthread, int n, int k) {
+  using CompType = jblas::prologue::weight_comp::gemm_kblcok::PrologueBIDs;
+  using namespace ne_jblas;
+  auto cd = jblas::utils::parallel::CpuDevice::getInstance();
+  auto dstbptr = (float*)dstpr;
+  cd->setThreads(nthread);
+  using Kernel = WeiS8Fp32<GcCompInt8KBlock, JblasAVX512F>;
+  // using Kernel = WeiS4ClipFp32<GcCompInt8KBlock, JblasAVX512F>;
+  static Kernel kernel;
+  auto packedw = kernel.createStorage(n, k, params.group_size);
+
+  jblas::utils::aligned_vector<int8_t> buffer(packedw.mSize);
+  packedw.assign(buffer.data());
+
+  kernel.packTransposeWeight(n, k, src_w, k, &packedw);
+  kernel.unpackTransposeWeight(n, k, &packedw, dstbptr, n);
+  return 0;
+}
+
+
 #if MODEL_NAME_ID == 1
 
 PYBIND11_MODULE(gptj_cpp, m)
@@ -473,5 +506,6 @@ PYBIND11_MODULE(baichuan_cpp, m)
                   py::arg("scale_dtype") = "fp32", py::arg("compute_dtype") = "ggml", py::arg("use_ggml") = false)
       .def("is_token_end", &Model::is_token_end)
       .def("numpy_to_float_ptr", &Model::numpy_to_float_ptr)
+      .def("q_jblas_tensor", &Model::q_jblas_tensor)
       .def("reinit", &Model::reinit);
 }

@@ -25,3 +25,10 @@ import struct
 # with open('output.bin', 'wb') as f:
 #     for i in range(len(dst)):
 #         f.write(struct.pack('b', dst[i]))
+
+
+# float32 convert to jblas tensor
+weight_f32 = torch.randn(4096, 4096).numpy()
+dst_f32 = np.zeros((4096, 4096), dtype=np.float32)
+model.model.q_jblas_tensor(weight_f32, dst_f32)
+print(dst_f32)
