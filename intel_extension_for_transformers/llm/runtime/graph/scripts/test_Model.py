@@ -11,14 +11,17 @@ scale = torch.load("scale.pth").detach().numpy()
 dst = np.zeros((4096, 4096), dtype=np.int8)
 
 model.init_from_bin("mpt", "/mnt/disk2/data/zhenweil/codes/ggml/mpt_ne.bin", max_new_tokens=20, num_beams=1, do_sample=True, top_k=40, top_p=0.95)
-model.model.numpy_to_float_ptr(int_weight, scale, dst)
+model.model.numpy_to_float_ptr(np.left_shift(int_weight, 4), scale, dst)
 
 # 打印C++函数返回的指针值
+print(int_weight)
 print(dst)
+print(np.right_shift(dst, 4))
+import pdb; pdb.set_trace()
 
 import struct
 # num = struct.pack('b', -128)
 # 打开一个文件以二进制写入
-with open('output.bin', 'wb') as f:
-    for i in range(len(dst)):
-        f.write(struct.pack('b', dst[i]))
+# with open('output.bin', 'wb') as f:
+#     for i in range(len(dst)):
+#         f.write(struct.pack('b', dst[i]))
