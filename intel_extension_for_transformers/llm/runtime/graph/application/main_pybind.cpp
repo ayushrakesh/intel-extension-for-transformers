@@ -68,11 +68,11 @@ class Model {
   static int quant_model(const std::string& model_path, const std::string& out_path, const std::string& weight_dtype,
                          const std::string& alg, int group_size, const std::string& scale_dtype,
                          const std::string& compute_dtype, bool use_ggml);
-  size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
+  static size_t jblas_qpack(const int8_t* src_w, const float* src_scales, const int8_t* src_zps,
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
-  size_t jblas_quantize(const float* src_w, 
+  static size_t jblas_quantize(const float* src_w, 
                    void* dstpr, const quant_params_internal params, int nthread, int n, int k);
-  void numpy_to_float_ptr(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
+  static void np_jblas_qpack(py::array_t<int8_t> src_w, py::array_t<float> src_scales, py::array_t<int8_t> dst) {
     // 获取NumPy数组的指针
     int8_t* w_ptr = src_w.mutable_data();
     float* scales_ptr = src_scales.mutable_data();
@@ -83,17 +83,16 @@ class Model {
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
     q_params.group_size = 128;
-    jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
-    return;
+    Model::jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
   }
 
-  void q_jblas_tensor(py::array_t<float> src_w, py::array_t<float> dst) {
+  static void np_jblas_quantize(py::array_t<float> src_w, py::array_t<float> dst) {
     quant_params_internal q_params;
     q_params.bits = quant_bits::q8;
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
     q_params.group_size = 128;
-    jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
+    Model::jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
   }
  private:
   model_context* ctx = nullptr;
@@ -505,7 +504,7 @@ PYBIND11_MODULE(baichuan_cpp, m)
                   py::arg("weight_dtype") = "int4", py::arg("alg") = "sym", py::arg("group_size") = 32,
                   py::arg("scale_dtype") = "fp32", py::arg("compute_dtype") = "ggml", py::arg("use_ggml") = false)
       .def("is_token_end", &Model::is_token_end)
-      .def("numpy_to_float_ptr", &Model::numpy_to_float_ptr)
-      .def("q_jblas_tensor", &Model::q_jblas_tensor)
+      .def_static("np_jblas_qpack", &Model::np_jblas_qpack)
+      .def_static("np_jblas_quantize", &Model::np_jblas_quantize)
       .def("reinit", &Model::reinit);
 }
