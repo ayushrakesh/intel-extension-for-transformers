@@ -390,22 +390,23 @@ size_t Model::jblas_qpack(const int8_t* src_w, const float* src_scales, const in
   using Kernel = WeiS8Fp32<GcCompInt8KBlock, JblasAVX512F>;
   static Kernel kernel;
   auto packedw = kernel.createStorage(n, k, params.group_size);
-  packedw.assign(dstbptr);
-  // packQWeight(N, K, tmpq.data(), ldb, Tscales.data(), Tzps.data(), stor);
-  // TODO: aligned weight and scales.
+
+  jblas::utils::aligned_vector<int8_t> buffer(packedw.mSize);
+  packedw.assign(buffer.data());
+
   jblas::utils::aligned_vector<int8_t> tmpq(n * k);
-  // copy src_w to tmpq
   std::copy(src_w, src_w + n * k, tmpq.data()); 
 
   int nk_scale = jblas::utils::updiv(k, packedw.mBlockSize);
   auto ssize = (size_t)n * nk_scale;
   jblas::utils::avector<float> Tscales(ssize);
-  // copy src scales to Tscales
   std::copy(src_scales, src_scales + ssize, Tscales.data()); 
 
   jblas::utils::avector<int8_t> Tzps(packedw.mIsAsym ? ssize : 0);
+
   kernel.packQWeight(n, k, tmpq.data(), k, Tscales.data(), Tzps.data(), &packedw);
 
+  kernel.unpackWeight(n, k, &packedw, dstbptr, n);
   return 0;
 }
 
