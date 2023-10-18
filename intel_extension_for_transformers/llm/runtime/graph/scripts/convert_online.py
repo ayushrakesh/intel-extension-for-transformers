@@ -36,7 +36,7 @@ class GGMLType(Enum):
     Q5_0 = 6
     Q5_1 = 7
     Q8_0 = 8
-    Q4_J = 10
+    Q4_J = 13
 
 
 class ModelType(Enum):
@@ -76,12 +76,13 @@ def quantize_q4_j(tensor: torch.Tensor, f):
     import numpy as np
     dst = np.zeros((tensor.shape[0], tensor.shape[1]*2), dtype=np.int8)
     byte_size = cpp_model.Model.np_jblas_quantize(tensor.numpy(), dst)
-    print("tensor shape: ", tensor.shape)
-    print("byte_size: ", byte_size)
+    # print("tensor shape: ", tensor.shape)
+    # print("byte_size: ", byte_size)
     import struct
     dst = dst.flatten()
-    for i in range(byte_size):
-        f.write(struct.pack('b', dst[i]))
+    f.write(struct.pack('b' * byte_size, *list(dst[:byte_size])))
+    # for i in range(byte_size):
+    #     f.write(struct.pack('b', dst[i]))
 
 
 
@@ -150,12 +151,17 @@ def dump_tensor(f, name: str, tensor: torch.Tensor, ggml_type: GGMLType):
     data = tensor.squeeze()
     n_dims = len(data.shape)
     str = name.encode("utf-8")
-    f.write(struct.pack("iii", n_dims, len(str), ggml_type.value))
+    if name == 'transformer.embedding.word_embeddings.weight':
+        f.write(struct.pack("iii", n_dims, len(str), 2))
+    else:
+        f.write(struct.pack("iii", n_dims, len(str), ggml_type.value))
     for i in range(n_dims):
         f.write(struct.pack("i", data.shape[n_dims - 1 - i]))
     f.write(str)
-
+    # TODO: file.seek(-static_cast<ptrdiff_t>(file.tell()) & 31, SEEK_CUR);
+    # fout.seek((fout.tell() + 31) & -32)
     # tensor data
+
     if ggml_type != GGMLType.Q4_J:
         if ggml_type == GGMLType.F32:
             tensor = tensor.float()
@@ -179,7 +185,12 @@ def dump_tensor(f, name: str, tensor: torch.Tensor, ggml_type: GGMLType):
         # f.seek(aligned_pos)
         tensor.numpy().tofile(f)
     else:
-        quantize_q4_j(tensor, f)
+        if name == 'transformer.embedding.word_embeddings.weight':
+            tensor = quantize_q4_0(tensor)
+            tensor.numpy().tofile(f)
+        else:
+            # import pdb; pdb.set_trace()
+            quantize_q4_j(tensor, f)
 
 
 def dump_state_dict(f, weight_names, state_dict, quantization_bit, ggml_type):
@@ -210,6 +221,7 @@ def dump_state_dict(f, weight_names, state_dict, quantization_bit, ggml_type):
             assert tensor.ndim == 1
             tensor = tensor.float()
             tensor_ggml_type = GGMLType.F32
+        # import pdb; pdb.set_trace()
 
         dump_tensor(f, name, tensor, tensor_ggml_type)
         tensor_info.append((name, tensor.shape, tensor_ggml_type.name))
@@ -320,7 +332,8 @@ class ChatGLM2Converter(BaseConverter):
         assert config.rmsnorm is True, "unimplemented: rmsnorm must be true"
 
         config_values = [
-            ggml_type.value,
+            # ggml_type.value,
+            10,
             config.padded_vocab_size,
             config.hidden_size,
             config.num_attention_heads,
@@ -338,7 +351,7 @@ class ChatGLM2Converter(BaseConverter):
         hparams = config.to_dict()
         f.write(struct.pack("i", hparams["padded_vocab_size"]))
         f.write(struct.pack("i", hparams["hidden_size"]))
-        f.write(struct.pack("i", 0))
+        f.write(struct.pack("i", 10))
         f.write(struct.pack("i", hparams["num_attention_heads"]))
         f.write(struct.pack("i", 0))
         f.write(struct.pack("i", hparams["num_layers"]))

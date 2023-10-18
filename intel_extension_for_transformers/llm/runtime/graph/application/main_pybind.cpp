@@ -86,13 +86,14 @@ class Model {
     return Model::jblas_qpack(w_ptr, scales_ptr, nullptr, dst_ptr, q_params, 1, 4096, 4096);
   }
 
-  static size_t np_jblas_quantize(py::array_t<float> src_w, py::array_t<float> dst) {
+  static size_t np_jblas_quantize(py::array_t<float> src_w, py::array_t<int8_t> dst) {
     quant_params_internal q_params;
-    q_params.bits = quant_bits::q8;
+    q_params.bits = quant_bits::q4;
     q_params.scale_dtype = quant_sdtype::fp32;
     q_params.compute_dtype = quant_comp::int8;
-    q_params.group_size = 128;
-    return Model::jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 1, 4096, 4096);
+    q_params.group_size = 32;
+    // printf("quantize: %d, %d\n", src_w.shape(0), src_w.shape(1));
+    return Model::jblas_quantize(src_w.mutable_data(), dst.mutable_data(), q_params, 8, src_w.shape(0), src_w.shape(1));
   }
  private:
   model_context* ctx = nullptr;
@@ -428,8 +429,8 @@ size_t Model::jblas_quantize(const float* src_w,
   auto cd = jblas::utils::parallel::CpuDevice::getInstance();
   auto dstbptr = (int8_t*)dstpr;
   cd->setThreads(nthread);
-  using Kernel = WeiS8Fp32<GcCompInt8KBlock, JblasAVX512F>;
-  // using Kernel = WeiS4ClipFp32<GcCompInt8KBlock, JblasAVX512F>;
+  // using Kernel = WeiS8Fp32<GcCompInt8KBlock, JblasAVX512F>;
+  using Kernel = WeiS4ClipFp32<GcCompInt8KBlock, JblasAVX512F>;
   static Kernel kernel;
   auto packedw = kernel.createStorage(n, k, params.group_size);
 
